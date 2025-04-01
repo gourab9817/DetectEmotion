@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Real-Time Emotion Detection </title>
+  <!-- Existing styles -->
+  <link rel="stylesheet" href="/static/style.css"/>
+
+  <!-- Font Awesome for icons -->
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+  />
+
+  <!-- Chart.js for the bar chart -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <header>
+    <div class="header-content">
+      <img src="/static/resources/cover.png" alt="Logo" />
+      <h1>Real-Time Emotion Detection</h1>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="camera-card">
+      <div class="card-header">
+        <h2><i class="fas fa-video"></i> Live Emotion Analysis</h2>
+      </div>
+
+      <!-- Video Feed Container -->
+      <div class="feed-container">
+        <img id="rted-placeholder" src="/static/resources/RTED.png" alt="RTED Placeholder" />
+        <video id="video-feed" width="640" height="480" autoplay></video>
+        <img id="processed-video-frame" src="" alt="Processed Frame" />
+      </div>
+
+      <!-- Current Emotion + Camera Controls -->
+      <div class="result-panel">
+        <div class="current-emotion">
+          <h3><i class="fas fa-face-smile"></i> Current Detection</h3>
+          <h2 id="emotion-result">Start camera to begin detection</h2>
+        </div>
+
+        <div class="camera-controls">
+          <button id="start-btn" onclick="startCamera()">
+            <i class="fas fa-play"></i> Start Detection
+          </button>
+          <button id="stop-btn" onclick="stopCamera()">
+            <i class="fas fa-stop"></i> Stop Detection
+          </button>
+        </div>
+      </div>
+
+      <!-- “Chat” Log Section -->
+      <div class="chat-container">
+        <div class="chat-header">
+          <h3><i class="fas fa-comments"></i> Detection Log</h3>
+        </div>
+        <ul id="chat-list" class="chat-list">
+          <!-- Detected emotions over time will appear here -->
+        </ul>
+      </div>
+
+      <!-- Session Results Panel -->
+      <div id="average-results">
+        <div class="results-header">
+          <h3><i class="fas fa-chart-bar"></i> Session Analysis</h3>
+          <p id="frames-analyzed"></p>
+        </div>
+        <div class="average-emotions-container">
+          <h4>Average Emotions:</h4>
+          <ul id="average-emotions" class="emotion-list"></ul>
+        </div>
+
+        <!-- Chart Container for average emotions -->
+        <div class="chart-container">
+          <canvas id="emotionsChart"></canvas>
+        </div>
+
+        <button id="download-results">
+          <i class="fas fa-download"></i> Download Session Data
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <p>
+      Developed by
+      <a href="https://gourabchoudhury.tech/" target="_blank">Gourab Choudhury</a>
+    </p>
+  </footer>
+
+  <script>
+    let videoStream = null;
+    let video = document.getElementById("video-feed");
+    let canvas = document.createElement("canvas");
+    let ctx = canvas.getContext("2d");
+    let intervalId = null;
+    let currentSessionId = null;
+
+    // We'll keep a running log of each real-time detection
+    let detectionLog = [];
+
+    // Initialize on page load
+    document.addEventListener("DOMContentLoaded", function () {
+      // Initially hide the video elements and results
+      document.getElementById("video-feed").style.display = "none";
+      document.getElementById("processed-video-frame").style.display = "none";
+      document.getElementById("average-results").style.display = "none";
+    });
+
+    function startCamera() {
+      if (videoStream) {
+        stopCamera();
+      }
+
+      // Update UI
+      document.getElementById("start-btn").classList.add("active");
+      document.getElementById("stop-btn").classList.remove("active");
+      document.getElementById("average-results").style.display = "none";
+      document.getElementById("emotion-result").innerText = "Initializing camera...";
+
+      // Clear out old logs
+      detectionLog = [];
+      document.getElementById("chat-list").innerHTML = "";
+
+      // Start a new session
+      fetch("/session", {
+        method: "POST",
+        body: JSON.stringify({ action: "start" }),
+        headers: { "Content-Type": "application/json" },
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          currentSessionId = data.session_id;
+          console.log("Started new session:", currentSessionId);
+
+          // Start camera
+          navigator.mediaDevices
+            .getUserMedia({ video: true })
+            .then((stream) => {
+              videoStream = stream;
+              video.srcObject = stream;
+              video.style.display = "block";
+              document.getElementById("rted-placeholder").style.display = "none";
+              document.getElementById("emotion-result").innerText = "Detecting emotions...";
+              startSendingFrames();
+            })
+            .catch((err) => {
+              console.error("Error accessing camera: ", err);
+              document.getElementById("emotion-result").innerText = "Camera access denied";
+              document.getElementById("start-btn").classList.remove("active");
+              alert("Could not access the camera. Please allow camera permissions.");
+            });
+        })
+        .catch((error) => {
+          console.error("Error starting session:", error);
+          document.getElementById("emotion-result").innerText = "Failed to start session";
+          document.getElementById("start-btn").classList.remove("active");
+        });
+    }
+
+    function stopCamera() {
+      if (!videoStream) return;
+
+      // Update UI
+      document.getElementById("start-btn").classList.remove("active");
+      document.getElementById("stop-btn").classList.add("active");
+      document.getElementById("emotion-result").innerText = "Detection stopped";
+
+      // Stop video stream
+      videoStream.getTracks().forEach((track) => track.stop());
+      videoStream = null;
+
+      clearInterval(intervalId);
+      intervalId = null;
+
+      video.srcObject = null;
+      video.style.display = "none";
+      document.getElementById("processed-video-frame").style.display = "none";
+      document.getElementById("processed-video-frame").src = "";
+      document.getElementById("rted-placeholder").style.display = "block";
+
+      // Get session results if we have a session ID
+      if (currentSessionId) {
+        fetch("/session", {
+          method: "POST",
+          body: JSON.stringify({
+            action: "stop",
+            session_id: currentSessionId,
+          }),
+          headers: { "Content-Type": "application/json" },
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            console.log("Session results:", data);
+
+            // Display average emotions
+            document.getElementById("frames-analyzed").innerText = `Analyzed ${data.frames_analyzed} frames`;
+
+            const averageEmotionsList = document.getElementById("average-emotions");
+            averageEmotionsList.innerHTML = "";
+
+            data.average_emotions.forEach((emotion) => {
+              const li = document.createElement("li");
+              li.innerHTML = `<span class="emotion-name">${emotion[0]}</span> 
+                              <span class="emotion-percent">${emotion[1]}%</span>`;
+              averageEmotionsList.appendChild(li);
+            });
+
+            // Show final results panel
+            document.getElementById("average-results").style.display = "block";
+
+            // Build bar chart with average emotions
+            buildEmotionsChart(data.average_emotions);
+
+            // Setup download button
+            document.getElementById("download-results").onclick = function () {
+              window.location.href = `/static/emotion_logs/${currentSessionId}.json`;
+            };
+          })
+          .catch((error) => console.error("Error getting session results:", error));
+      }
+    }
+
+    function startSendingFrames() {
+      intervalId = setInterval(() => {
+        if (!videoStream) return;
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        let imageData = canvas.toDataURL("image/jpeg");
+
+        fetch("/predict_video", {
+          method: "POST",
+          body: JSON.stringify({
+            image: imageData,
+            session_id: currentSessionId,
+          }),
+          headers: { "Content-Type": "application/json" },
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            // Display processed frame with bounding boxes
+            document.getElementById("video-feed").style.display = "none"; // Hide original feed
+            document.getElementById("rted-placeholder").style.display = "none"; // Hide placeholder
+            document.getElementById("processed-video-frame").src =
+              "data:image/jpeg;base64," + data.processed_frame;
+            document.getElementById("processed-video-frame").style.display = "block";
+
+            // Show detected emotions
+            if (data.emotions.length > 0) {
+              let topEmotions = data.emotions
+                .slice(0, 3)
+                .map((e) => `${e[0]} (${e[1]}%)`)
+                .join(", ");
+              document.getElementById("emotion-result").innerText = topEmotions;
+
+              // Add to “chat” log
+              let timestamp = new Date().toLocaleTimeString();
+              let li = document.createElement("li");
+              li.classList.add("chat-message");
+              li.innerHTML = `<span class="chat-time">${timestamp}</span>
+                              <span class="chat-emotions">${topEmotions}</span>`;
+              document.getElementById("chat-list").appendChild(li);
+              // Scroll chat to bottom
+              let chatContainer = document.querySelector(".chat-container");
+              chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            } else {
+              document.getElementById("emotion-result").innerText = "No emotions detected";
+            }
+          })
+          .catch((error) => {
+            console.error("Error:", error);
+            document.getElementById("emotion-result").innerText = "Detection error";
+          });
+      }, 750); // ~4 frames per 3 seconds (adjust as needed)
+    }
+
+    // Build a bar chart for average emotions using Chart.js
+    function buildEmotionsChart(averageEmotionsArray) {
+      const labels = averageEmotionsArray.map((item) => item[0]);
+      const values = averageEmotionsArray.map((item) => item[1]);
+
+      const ctxChart = document.getElementById("emotionsChart").getContext("2d");
+      new Chart(ctxChart, {
+        type: "bar",
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: "Average Emotions (%)",
+              data: values,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              display: false,
+            },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 100,
+            },
+          },
+        },
+      });
+    }
+  </script>
+</body>
+</html>

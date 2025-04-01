@@ -1,0 +1,9 @@
+Flask
+tensorflow-cpu
+Pillow
+numpy
+gunicorn
+opencv-python-headless
+mtcnn
+supabase
+python-dotenv
